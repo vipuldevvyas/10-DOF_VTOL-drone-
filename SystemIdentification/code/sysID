@@ -1,0 +1,222 @@
+    %% ==============================================
+%  VTOL 4-Tilt-Rotor System ID using n4sid (8x12)
+%  Uses System Identification Toolbox
+% ===============================================
+clear; clc; close all;
+
+%% 0. User settings  %%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+modelName = 'Tiltrotor_systemID';     % your .slx name
+Ts       = 1e-3;                      % initial guess (will recompute from data)
+Tsim     = 10;                        % simulation time (s)
+
+%% 1. Run Simulink model  %%%%%%%%%%%%%%%%%%%%%%%%
+load_system(modelName);
+set_param(modelName, 'StopTime', num2str(Tsim));
+
+out = sim(modelName);          % SimulationOutput
+
+% Use signal logging (logsout)
+L = out.logsout;
+
+%% 2. Extract OUTPUT signals from logsout  %%%%%%%
+x      = L.getElement('x').Values.Data(:);
+y      = L.getElement('y').Values.Data(:);
+z      = L.getElement('z').Values.Data(:);
+vx     = L.getElement('vx').Values.Data(:);
+vy     = L.getElement('vy').Values.Data(:);
+vz     = L.getElement('vz').Values.Data(:);
+phi    = L.getElement('phi').Values.Data(:);
+tetha  = L.getElement('tetha').Values.Data(:);
+psi    = L.getElement('psi').Values.Data(:);
+p      = L.getElement('p').Values.Data(:);
+q      = L.getElement('q').Values.Data(:);
+r      = L.getElement('r').Values.Data(:);
+
+t_y    = L.getElement('x').Values.Time(:);   % reference time (same length as x)
+N_y    = length(t_y);
+
+% Build output matrix (N_y x 12)
+y_raw = [x, y, z, vx, vy, vz, ...
+         phi, tetha, psi, p, q, r];
+
+%% 3. Extract INPUT signals and resample to t_y %%
+Omega_1 = L.getElement('Omega_1').Values;   % timeseries
+Omega_2 = L.getElement('Omega_2').Values;
+Omega_3 = L.getElement('Omega_3').Values;
+Omega_4 = L.getElement('Omega_4').Values;
+Delta_1 = L.getElement('Delta_1').Values;
+Delta_2 = L.getElement('Delta_2').Values;
+Delta_3 = L.getElement('Delta_3').Values;
+Delta_4 = L.getElement('Delta_4').Values;
+
+t_u = Omega_1.Time(:);    % assume all inputs share this time
+
+% resample each input onto output time grid t_y
+Om1r = interp1(t_u, Omega_1.Data(:), t_y, 'linear', 'extrap');
+Om2r = interp1(t_u, Omega_2.Data(:), t_y, 'linear', 'extrap');
+Om3r = interp1(t_u, Omega_3.Data(:), t_y, 'linear', 'extrap');
+Om4r = interp1(t_u, Omega_4.Data(:), t_y, 'linear', 'extrap');
+De1r = interp1(t_u, Delta_1.Data(:), t_y, 'linear', 'extrap');
+De2r = interp1(t_u, Delta_2.Data(:), t_y, 'linear', 'extrap');
+De3r = interp1(t_u, Delta_3.Data(:), t_y, 'linear', 'extrap');
+De4r = interp1(t_u, Delta_4.Data(:), t_y, 'linear', 'extrap');
+
+% FINAL numeric input matrix (N_y x 8)
+u_raw = [Om1r, Om2r, Om3r, Om4r, De1r, De2r, De3r, De4r];
+
+% time vector
+t = t_y;
+
+%% 4. Compute Ts from data  %%%%%%%%%%%%%%%%%%%%%%
+Ts = mean(diff(t));      % approximate constant sample time
+
+%% 5. Optional: cut initial transient (first 1 second)
+t0   = 1.0;
+idx0 = find(t >= t0, 1, 'first');
+if ~isempty(idx0)
+    u_raw = u_raw(idx0:end, :);
+    y_raw = y_raw(idx0:end, :);
+    t     = t(idx0:end, :);
+end
+%% 4b. Detrend & low-pass filter inputs and outputs %%%%%%%%%%%%%%%%
+
+% 1) Detrend (remove constant + linear trends)
+y_raw = detrend(y_raw);    % each column separately
+u_raw = detrend(u_raw);
+
+% 2) Low-pass Butterworth filter (keep dynamics below ~10 Hz)
+Fs = 1/Ts;          % sampling frequency
+fc = 10;            % cutoff frequency in Hz  (you can try 5, 15, etc.)
+Wn = fc/(Fs/2);     % normalized cutoff (0–1)
+
+% 4th-order Butterworth
+[b,a] = butter(4, Wn, 'low');
+
+% zero-phase filtering (no time delay)
+y_raw = filtfilt(b, a, y_raw);   % size N×12
+u_raw = filtfilt(b, a, u_raw);   % size N×8
+%% 4c. Decimate (downsample) to reduce noise & correlation
+
+decim = 10;               % keep every 10th sample  (try 5–20)
+idx   = 1:decim:size(y_raw,1);
+
+y_raw = y_raw(idx, :);
+u_raw = u_raw(idx, :);
+t     = t(idx);
+
+Ts = Ts * decim;          % new sampling time
+Fs = 1/Ts;                % update Fs for later use
+
+% (Optional) sanity check
+disp('After filtering:');
+disp(size(u_raw));
+disp(size(y_raw));
+
+% (debug – you can keep or remove these)
+disp('Sizes after trimming:');
+disp(size(u_raw));   % should be [N 8]
+disp(size(y_raw));   % should be [N 12]
+
+%% 6. Split into identification and validation  %%
+N    = length(t);
+N_id = floor(0.7 * N);        % 70% ID, 30% validation
+
+u_id  = u_raw(1:N_id, :);
+y_id  = y_raw(1:N_id, :);
+u_val = u_raw(N_id+1:end, :);
+y_val = y_raw(N_id+1:end, :);
+
+%% 7. Create iddata objects  %%%%%%%%%%%%%%%%%%%%%
+data_id  = iddata(y_id,  u_id,  Ts);
+data_val = iddata(y_val, u_val, Ts);
+
+%% 8. Order sweep with n4sid: RSS vs order  %%%%%%%%%%%%%%%%%%%%%%%%
+
+orders = 1:16;             % <-- Upper limit = 16
+nOrders = numel(orders);
+
+rss  = zeros(nOrders,1);   % residual sum of squares for validation data
+fit  = zeros(nOrders,1);   % avg fit (optional)
+
+opt = n4sidOptions( ...
+    'Focus','simulation', ...
+    'N4Weight','CVA', ...
+    'Display','off');      % no spam in loop
+
+fprintf('====== Order sweep (n4sid: 1 to 16) ======\n');
+for k = 1:nOrders
+    n = orders(k);
+    sysk = n4sid(data_id, n, opt);
+
+    % validation
+    [y_hat, ~, ~] = compare(data_val, sysk);
+    y_hat = y_hat.OutputData;
+
+    e = y_val - y_hat;           % error
+    rss(k) = sum(e(:).^2);       % RSS across all outputs
+
+    % optional fit metric
+    num = vecnorm(e);
+    den = vecnorm(y_val - mean(y_val,1));
+    fit_per_channel = 100*(1 - num./den);
+    fit(k) = mean(fit_per_channel);
+
+    fprintf('Order %2d: RSS = %.4e,  mean fit = %6.2f %%\n', ...
+            n, rss(k), fit(k));
+end
+
+% Best order = minimum RSS
+[~, idxBest] = min(rss);
+bestOrder    = orders(idxBest);
+
+fprintf('\nBest order (min RSS) = %d\n', bestOrder);
+
+% Plot RSS vs order
+figure;
+semilogy(orders, rss, 'o-', 'LineWidth', 1.5);
+grid on;
+xlabel('Model Order n');
+ylabel('Residual Sum of Squares (RSS)');
+title('n4sid: RSS vs Order (1 to 16)');
+hold on;
+plot(bestOrder, rss(idxBest), 'rs', 'MarkerSize', 10, 'LineWidth', 2);
+legend('RSS','Best order','Location','best');
+
+%% 9. Build final model with chosen order  %%%%%%%%%%%%%%%%%%%%%%%%%
+
+opt.Display = 'on';
+sysd = n4sid(data_id, bestOrder, opt);
+
+[A,B,C,D] = ssdata(sysd);
+
+disp('A matrix:'); disp(A);
+disp('B matrix:'); disp(B);
+disp('C matrix:'); disp(C);
+disp('D matrix:'); disp(D);
+
+fprintf('\nFinal state order = %d\n', bestOrder);
+
+% Validation plot
+figure;
+compare(data_val, sysd);
+title(sprintf('Validation with best order n = %d', bestOrder));
+
+% Compute final fit
+[y_hat, ~, ~] = compare(data_val, sysd);
+y_hat = y_hat.OutputData;
+
+err = y_val - y_hat;
+num = vecnorm(err);
+den = vecnorm(y_val - mean(y_val,1));
+fit_per_channel = 100*(1 - num./den);
+fit_mean = mean(fit_per_channel);
+
+fprintf('Average fit over outputs: %.1f %%\n', fit_mean);
+disp('Fit per output:');
+disp(fit_per_channel);
+
+% Save final model
+Ts_id = Ts;
+save('id_model.mat','sysd','Ts_id');
+
+
