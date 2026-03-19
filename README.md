@@ -1,4 +1,6 @@
 # 10-DOF_VTOL-drone-
 Validation of a 10 DOF VTOL drone model (6 rigid-body + 4 actuator dynamics) using analytical modeling, MATLAB Simscape, and system identification across hover and forward flight.
 
-<img src="./img/Robotic_arm.drawio.svg" alt="Reference model" width="100%"/>
+## Model
+![Model](Simscape_Model/Screenshots/model.png)
+
