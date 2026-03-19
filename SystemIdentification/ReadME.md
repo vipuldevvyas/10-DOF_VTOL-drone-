@@ -20,10 +20,6 @@ This module focuses on developing a data-driven model of the VTOL drone using sy
    - Minimum RSS (Residual Sum of Squares)
    - Maximum fit percentage
 
-## Sample Result:
-
-![System ID](Simscape_Model/Screenshots/system_id.png)
-
 ## Files:
 
 * `system_id.m`
