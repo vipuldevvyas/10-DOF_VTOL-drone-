@@ -1,0 +1,469 @@
+function run_simulation_gui()
+% RUN_SIMULATION_GUI
+% Attractive control panel for the 20-state tilt-rotor VTOL model.
+% Calls: tilt_rotor_dynamics.m
+
+    clc; close all;
+
+    %% ============================================================
+    %  PARAMETERS
+    %% ============================================================
+    params.g   = 9.81;
+    params.m   = 5.88;
+    params.Kt  = 1e-5;
+    params.Kq  = 2e-7;
+
+    params.Ixx = 0.00817;
+    params.Iyy = 0.02136;
+    params.Izz = 0.00817;
+    params.I   = diag([params.Ixx params.Iyy params.Izz]);
+
+    params.Lx = 0.15;
+    params.Ly = 0.15;
+    params.l_vectors = [ params.Lx  -params.Lx  -params.Lx   params.Lx;
+                         params.Ly   params.Ly  -params.Ly  -params.Ly;
+                         0           0           0           0];
+    params.S = [-1; +1; -1; +1];
+
+    params.rho       = 1.225;
+    params.A_wing    = 0.03;
+    params.A_cross_x = 0.06;
+    params.A_cross_y = 0.015;
+    params.A_cross_z = 0.02;
+    params.C_D_x     = 1.0;
+    params.C_D_y     = 3.5;
+    params.C_D_z     = 0.00;
+    params.C_L       = 0.5;   % lift coefficient used by tilt_rotor_dynamics_69
+    params.CL0       = 2.5;
+    params.CL_alpha  = 1.0;
+    params.CD0       = 0.04;
+    params.k_induced = 0.08;
+
+    %% ============================================================
+    %  Derived hover speed
+    %% ============================================================
+    T_hover = params.m * params.g / 4;
+    w_hover = sqrt(T_hover / params.Kt);
+    w_max   = 2.5 * w_hover;
+
+    %% ============================================================
+    %  COLOUR PALETTE  (dark cockpit theme)
+    %% ============================================================
+    C.bg        = [0.08  0.10  0.13];   % near-black background
+    C.panel     = [0.12  0.15  0.20];   % panel cards
+    C.border    = [0.20  0.25  0.35];   % subtle borders
+    C.accent    = [0.20  0.65  1.00];   % electric blue accent
+    C.accent2   = [0.00  0.85  0.60];   % teal accent (tilt)
+    C.warn      = [1.00  0.55  0.10];   % orange warning
+    C.text_hi   = [0.95  0.97  1.00];   % primary text
+    C.text_lo   = [0.50  0.58  0.70];   % secondary text
+    C.btn_run   = [0.10  0.72  0.40];   % green run button
+    C.btn_rst   = [0.75  0.20  0.20];   % red reset button
+
+    FIG_W = 920;  FIG_H = 560;
+
+    %% ============================================================
+    %  MAIN FIGURE
+    %% ============================================================
+    hFig = figure( ...
+        'Name',          'VTOL Tilt-Rotor  |  Control Panel', ...
+        'NumberTitle',   'off', ...
+        'Position',      [120 80 FIG_W FIG_H], ...
+        'Color',         C.bg, ...
+        'MenuBar',       'none', ...
+        'ToolBar',       'none', ...
+        'Resize',        'off');
+
+    %% ---- Title bar ----
+    annotation(hFig,'rectangle',[0 0.91 1 0.09], ...
+        'FaceColor',C.panel,'EdgeColor',C.border,'LineWidth',1);
+
+    annotation(hFig,'textbox',[0.01 0.91 0.55 0.09], ...
+        'String','  VTOL TILT-ROTOR  |  Flight Dynamics Simulator', ...
+        'Color',C.accent,'FontSize',13,'FontWeight','bold', ...
+        'FontName','Consolas','EdgeColor','none','FitBoxToText','off', ...
+        'VerticalAlignment','middle');
+
+    annotation(hFig,'textbox',[0.56 0.91 0.43 0.09], ...
+        'String','20-State Model  //  NED Convention  //  ZYX Euler  ', ...
+        'Color',C.text_lo,'FontSize',8,'FontName','Consolas', ...
+        'EdgeColor','none','FitBoxToText','off', ...
+        'HorizontalAlignment','right','VerticalAlignment','middle');
+
+    %% ============================================================
+    %  LEFT PANEL — Motor Speeds
+    %% ============================================================
+    drawCard(hFig, 0.01, 0.10, 0.47, 0.79, C)
+
+    annotation(hFig,'textbox',[0.02 0.83 0.25 0.06], ...
+        'String','  ROTOR SPEEDS', ...
+        'Color',C.accent,'FontSize',9,'FontWeight','bold', ...
+        'FontName','Consolas','EdgeColor','none','FitBoxToText','off');
+
+    annotation(hFig,'textbox',[0.27 0.83 0.20 0.06], ...
+        'String',sprintf('hover = %.0f rad/s',w_hover), ...
+        'Color',C.text_lo,'FontSize',7,'FontName','Consolas', ...
+        'EdgeColor','none','FitBoxToText','off', ...
+        'VerticalAlignment','middle');
+
+    sliders = gobjects(8,1);
+    edits   = gobjects(8,1);
+    valLabels = gobjects(8,1);
+
+    motorColors = {C.accent; [0.40 0.80 1.00]; [0.00 0.90 0.75]; [0.60 0.45 1.00]};
+
+    rowH = 0.155;
+    for i = 1:4
+        yb = 0.82 - i*rowH;
+
+        % Rotor label badge
+        annotation(hFig,'rectangle',[0.02 yb+0.025 0.055 0.055], ...
+            'FaceColor',motorColors{i},'EdgeColor','none');
+        annotation(hFig,'textbox',[0.02 yb+0.025 0.055 0.055], ...
+            'String',sprintf('M%d',i), ...
+            'Color',C.bg,'FontSize',9,'FontWeight','bold', ...
+            'FontName','Consolas','EdgeColor','none', ...
+            'HorizontalAlignment','center','VerticalAlignment','middle');
+
+        % Slider label
+        annotation(hFig,'textbox',[0.085 yb+0.050 0.12 0.035], ...
+            'String',sprintf('\\omega_%d  (rad/s)',i), ...
+            'Color',C.text_hi,'FontSize',7.5,'FontName','Consolas', ...
+            'EdgeColor','none','FitBoxToText','off');
+
+        % Value label (live)
+        valLabels(i) = annotation(hFig,'textbox',[0.085 yb+0.015 0.10 0.030], ...
+            'String',sprintf('%.1f',w_hover), ...
+            'Color',motorColors{i},'FontSize',8,'FontWeight','bold', ...
+            'FontName','Consolas','EdgeColor','none','FitBoxToText','off');
+
+        % Slider
+        px = [0.165 yb+0.025 0.255 0.035];
+        sliders(i) = uicontrol(hFig,'Style','slider', ...
+            'Min',0,'Max',w_max,'Value',w_hover, ...
+            'Units','normalized','Position',px, ...
+            'BackgroundColor',C.border);
+
+        % Edit box
+        edits(i) = uicontrol(hFig,'Style','edit', ...
+            'String',sprintf('%.1f',w_hover), ...
+            'Units','normalized','Position',[0.430 yb+0.020 0.045 0.040], ...
+            'BackgroundColor',C.panel,'ForegroundColor',motorColors{i}, ...
+            'FontName','Consolas','FontSize',8,'FontWeight','bold', ...
+            'HorizontalAlignment','center');
+
+        sliders(i).Callback = @(s,~) syncSlider(s, edits(i), valLabels(i), 0, w_max);
+        edits(i).Callback   = @(e,~) syncEdit(e, sliders(i), valLabels(i), 0, w_max);
+    end
+
+    %% ============================================================
+    %  RIGHT PANEL — Tilt Angles
+    %% ============================================================
+    drawCard(hFig, 0.50, 0.10, 0.49, 0.79, C)
+
+    annotation(hFig,'textbox',[0.51 0.83 0.25 0.06], ...
+        'String','  TILT ANGLES', ...
+        'Color',C.accent2,'FontSize',9,'FontWeight','bold', ...
+        'FontName','Consolas','EdgeColor','none','FitBoxToText','off');
+
+    annotation(hFig,'textbox',[0.76 0.83 0.22 0.06], ...
+        'String','rate = 3 deg/s max', ...
+        'Color',C.text_lo,'FontSize',7,'FontName','Consolas', ...
+        'EdgeColor','none','FitBoxToText','off', ...
+        'VerticalAlignment','middle');
+
+    tiltColors = {C.accent2; [0.00 1.00 0.50]; [0.40 0.95 0.70]; [0.20 0.80 0.60]};
+
+    for i = 1:4
+        yb = 0.82 - i*rowH;
+        idx = i + 4;
+
+        annotation(hFig,'rectangle',[0.51 yb+0.025 0.055 0.055], ...
+            'FaceColor',tiltColors{i},'EdgeColor','none');
+        annotation(hFig,'textbox',[0.51 yb+0.025 0.055 0.055], ...
+            'String',sprintf('R%d',i), ...
+            'Color',C.bg,'FontSize',9,'FontWeight','bold', ...
+            'FontName','Consolas','EdgeColor','none', ...
+            'HorizontalAlignment','center','VerticalAlignment','middle');
+
+        annotation(hFig,'textbox',[0.575 yb+0.050 0.12 0.035], ...
+            'String',sprintf('\\delta_%d  (deg)',i), ...
+            'Color',C.text_hi,'FontSize',7.5,'FontName','Consolas', ...
+            'EdgeColor','none','FitBoxToText','off');
+
+        valLabels(idx) = annotation(hFig,'textbox',[0.575 yb+0.015 0.10 0.030], ...
+            'String','0.0', ...
+            'Color',tiltColors{i},'FontSize',8,'FontWeight','bold', ...
+            'FontName','Consolas','EdgeColor','none','FitBoxToText','off');
+
+        px = [0.655 yb+0.025 0.255 0.035];
+        sliders(idx) = uicontrol(hFig,'Style','slider', ...
+            'Min',0,'Max',90,'Value',0, ...
+            'Units','normalized','Position',px, ...
+            'BackgroundColor',C.border);
+
+        edits(idx) = uicontrol(hFig,'Style','edit', ...
+            'String','0.0', ...
+            'Units','normalized','Position',[0.920 yb+0.020 0.045 0.040], ...
+            'BackgroundColor',C.panel,'ForegroundColor',tiltColors{i}, ...
+            'FontName','Consolas','FontSize',8,'FontWeight','bold', ...
+            'HorizontalAlignment','center');
+
+        sliders(idx).Callback = @(s,~) syncSlider(s, edits(idx), valLabels(idx), 0, 90);
+        edits(idx).Callback   = @(e,~) syncEdit(e, sliders(idx), valLabels(idx), 0, 90);
+    end
+
+    %% ============================================================
+    %  BOTTOM BAR — Sim time + Buttons
+    %% ============================================================
+    annotation(hFig,'rectangle',[0 0 1 0.10], ...
+        'FaceColor',C.panel,'EdgeColor',C.border,'LineWidth',1);
+
+    % Sim time label + edit
+    annotation(hFig,'textbox',[0.01 0.02 0.10 0.06], ...
+        'String','SIM TIME (s)', ...
+        'Color',C.text_lo,'FontSize',7,'FontName','Consolas', ...
+        'EdgeColor','none','FitBoxToText','off','VerticalAlignment','middle');
+
+    hSimTime = uicontrol(hFig,'Style','edit', ...
+        'String','30', ...
+        'Units','normalized','Position',[0.10 0.025 0.06 0.055], ...
+        'BackgroundColor',C.bg,'ForegroundColor',C.accent, ...
+        'FontName','Consolas','FontSize',11,'FontWeight','bold', ...
+        'HorizontalAlignment','center');
+
+    % Status text
+    hStatus = uicontrol(hFig,'Style','text', ...
+        'String','  Ready', ...
+        'Units','normalized','Position',[0.18 0.020 0.35 0.060], ...
+        'BackgroundColor',C.panel,'ForegroundColor',C.text_lo, ...
+        'FontName','Consolas','FontSize',8, ...
+        'HorizontalAlignment','left');
+
+    % RESET button
+    uicontrol(hFig,'Style','pushbutton', ...
+        'String','RESET', ...
+        'Units','normalized','Position',[0.62 0.020 0.10 0.065], ...
+        'BackgroundColor',C.btn_rst,'ForegroundColor',C.text_hi, ...
+        'FontName','Consolas','FontSize',9,'FontWeight','bold', ...
+        'Callback',@(~,~) resetSliders(sliders, edits, valLabels, w_hover, w_max));
+
+    % RUN button
+    uicontrol(hFig,'Style','pushbutton', ...
+        'String','  RUN SIMULATION  \blacktriangleright', ...
+        'Units','normalized','Position',[0.74 0.015 0.24 0.075], ...
+        'BackgroundColor',C.btn_run,'ForegroundColor',C.text_hi, ...
+        'FontName','Consolas','FontSize',10,'FontWeight','bold', ...
+        'Callback',@(~,~) runSimulation(sliders, params, hSimTime, hStatus));
+
+end % end main
+
+
+%% ============================================================
+%  Draw a rounded-ish card (rectangle annotation)
+%% ============================================================
+function drawCard(hFig, x, y, w, h, C)
+    annotation(hFig,'rectangle',[x y w h], ...
+        'FaceColor',C.panel,'EdgeColor',C.border,'LineWidth',1.2);
+end
+
+
+%% ============================================================
+%  Sync helpers
+%% ============================================================
+function syncSlider(slider, editBox, lbl, lo, hi)
+    v = max(lo, min(hi, slider.Value));
+    slider.Value    = v;
+    editBox.String  = sprintf('%.1f', v);
+    lbl.String      = sprintf('%.1f', v);
+end
+
+function syncEdit(editBox, slider, lbl, lo, hi)
+    v = str2double(editBox.String);
+    if isnan(v), v = slider.Value; end
+    v = max(lo, min(hi, v));
+    slider.Value   = v;
+    editBox.String = sprintf('%.1f', v);
+    lbl.String     = sprintf('%.1f', v);
+end
+
+function resetSliders(sliders, edits, valLabels, w_hover, ~)
+    for i = 1:4
+        sliders(i).Value   = w_hover;
+        edits(i).String    = sprintf('%.1f', w_hover);
+        valLabels(i).String = sprintf('%.1f', w_hover);
+    end
+    for i = 5:8
+        sliders(i).Value    = 0;
+        edits(i).String     = '0.0';
+        valLabels(i).String = '0.0';
+    end
+end
+
+
+%% ============================================================
+%  SIMULATION CALLBACK
+%% ============================================================
+function runSimulation(sliders, params, hSimTime, hStatus)
+
+    hStatus.String        = '  Integrating...';
+    hStatus.ForegroundColor = [1.0 0.75 0.1];
+    drawnow;
+
+    %% Build input vector u (8x1)
+    u = zeros(8,1);
+    for i = 1:4
+        u(i) = sliders(i).Value;             % omega_i  (rad/s)
+    end
+    for i = 5:8
+        u(i) = deg2rad(sliders(i).Value);    % delta_tgt_i  (rad)
+    end
+
+    %% Initial state — 16x1 (no tilt rate states anymore)
+    x0 = zeros(16, 1);
+    % x0(1:3)   position   = 0
+    % x0(4:6)   velocity   = 0
+    % x0(7:9)   angles     = 0
+    % x0(10:12) body rates = 0
+    % x0(13:16) tilt angles= 0
+
+    %% Time span
+    t_end = str2double(hSimTime.String);
+    if isnan(t_end) || t_end <= 0, t_end = 30; end
+    tspan = [0 t_end];
+
+    %% Integrate — ode45 with divergence guard
+    dynfun = @(tt, xx) tilt_rotor_dynamics_final(tt, xx, u, params);
+    opts   = odeset('RelTol',1e-4,'AbsTol',1e-6,'MaxStep',0.05);
+
+    % Event function: stop if any state exceeds a physical limit
+    % (drone has tumbled / diverged — no point integrating further)
+    opts = odeset(opts, 'Events', @divergenceEvent);
+
+    try
+        [t, x, te, ~, ~] = ode45(dynfun, tspan, x0, opts);
+        if ~isempty(te)
+            hStatus.String = sprintf('  Stopped at t=%.2fs — states diverged (open-loop instability)', te(1));
+            hStatus.ForegroundColor = [1.0 0.65 0.1];
+        else
+            hStatus.String = sprintf('  Done  —  %d steps  |  t = %.1f s', numel(t), t(end));
+            hStatus.ForegroundColor = [0.2 0.9 0.5];
+        end
+    catch ME
+        hStatus.String        = ['  ERROR: ' ME.message];
+        hStatus.ForegroundColor = [1 0.3 0.3];
+        return;
+    end
+
+    %% Compute world-frame accelerations
+    N   = numel(t);
+    acc = zeros(N, 3);
+    for k = 1:N
+        xd       = dynfun(t(k), x(k,:).');
+        acc(k,:) = xd(4:6).';
+    end
+
+    %% ============================================================
+    %  PLOT RESULTS
+    %% ============================================================
+    C.bg      = [0.07 0.09 0.12];
+    C.panel   = [0.11 0.14 0.19];
+    C.grid    = [0.18 0.22 0.30];
+    C.text    = [0.90 0.93 1.00];
+    C.accent  = [0.20 0.65 1.00];
+    C.accent2 = [0.00 0.85 0.60];
+
+    hPlt = figure('Name','Tilt-Rotor  |  Simulation Results', ...
+        'NumberTitle','off', ...
+        'Color',C.bg, ...
+        'Position',[80 60 1200 700]);
+
+    % Compute tilt rates from state (sign of error * 3 deg/s)
+    tilt_rate_val = deg2rad(3.0);
+    delta_tgt_rep = repmat(u(5:8)', N, 1);
+    err_mat       = delta_tgt_rep - x(:,13:16);
+    tilt_rates    = zeros(N,4);
+    for i = 1:4
+        tilt_rates(:,i) = tilt_rate_val * sign(err_mat(:,i));
+        tilt_rates(abs(err_mat(:,i)) < deg2rad(0.05), i) = 0;
+    end
+
+    titles  = {'Linear Acceleration (World)', 'Position (World)', ...
+               'Velocity (World)',             'Tilt Angles'      };
+    ylabels = {'m/s^2','m','m/s','deg'};
+
+    plotData = { acc,          x(:,1:3),            ...
+                 x(:,4:6),    rad2deg(x(:,13:16))   };
+
+    legendLabels = { {'a_x','a_y','a_z'},  {'x','y','z'},  ...
+                     {'v_x','v_y','v_z'},  {'\delta_1','\delta_2','\delta_3','\delta_4'} };
+
+    lineColors = { [0.20 0.65 1.00]; [0.00 0.85 0.60]; [1.00 0.55 0.15]; [0.75 0.40 1.00] };
+
+    % Layout: 4 subplots on left (2x2), large 3D trajectory on right
+    for sp = 1:4
+        pos = [1 2 4 5];   % subplot positions in a 2x3 grid
+        ax = subplot(2,3,pos(sp));
+        set(ax,'Color',C.panel,'GridColor',C.grid,'GridAlpha',1, ...
+               'XColor',C.text,'YColor',C.text,'FontName','Consolas', ...
+               'FontSize',7.5,'LineWidth',0.8,'Box','on','TickDir','in');
+        hold(ax,'on'); grid(ax,'on');
+
+        data = plotData{sp};
+        nc   = size(data,2);
+        for c = 1:nc
+            col = lineColors{mod(c-1,4)+1};
+            plot(ax, t, data(:,c), 'Color',col, 'LineWidth',1.4);
+        end
+
+        title(ax, titles{sp}, 'Color',C.accent,'FontName','Consolas', ...
+              'FontSize',8,'FontWeight','bold');
+        xlabel(ax,'t (s)','Color',C.text,'FontSize',7);
+        ylabel(ax, ylabels{sp},'Color',C.text,'FontSize',7);
+        legend(ax, legendLabels{sp},'TextColor',C.text,'FontName','Consolas', ...
+               'FontSize',6,'Location','best','Color',C.bg,'EdgeColor',C.grid);
+    end
+
+    % Large 3D trajectory on the right (spans both rows)
+    ax3 = subplot(2,3,[3 6]);
+    set(ax3,'Color',C.panel,'GridColor',C.grid,'GridAlpha',0.6, ...
+            'XColor',C.text,'YColor',C.text,'ZColor',C.text, ...
+            'FontName','Consolas','FontSize',7.5,'Box','on');
+    hold(ax3,'on'); grid(ax3,'on');
+
+    nPts = size(x,1);
+    cmap = parula(nPts);
+    for k = 1:nPts-1
+        plot3(ax3, x(k:k+1,1), x(k:k+1,2), -x(k:k+1,3), ...
+              'Color',cmap(k,:),'LineWidth',1.8);
+    end
+    plot3(ax3, x(1,1),   x(1,2),   -x(1,3),   'o','Color',[0.2 0.9 0.4],'MarkerSize',8,'LineWidth',2.5);
+    plot3(ax3, x(end,1), x(end,2), -x(end,3), 's','Color',[1.0 0.4 0.2],'MarkerSize',8,'LineWidth',2.5);
+
+    title(ax3,'3D Trajectory  ( \circ start   \square end )', ...
+          'Color',C.accent,'FontName','Consolas','FontSize',9,'FontWeight','bold');
+    xlabel(ax3,'x  (m)','Color',C.text,'FontSize',8);
+    ylabel(ax3,'y  (m)','Color',C.text,'FontSize',8);
+    zlabel(ax3,'alt  (m)','Color',C.text,'FontSize',8);
+    view(ax3, 45, 25);
+
+    sgtitle(hPlt, 'VTOL Tilt-Rotor  —  Simulation Results', ...
+        'Color',[0.20 0.65 1.00],'FontName','Consolas','FontSize',13,'FontWeight','bold');
+
+end
+
+%% ============================================================
+%  EVENT: Stop integration when states physically diverge
+%  Triggers when velocity > 500 m/s OR angular rate > 100 rad/s
+%  OR position > 10000 m  (physically impossible in normal flight)
+%% ============================================================
+function [value, isterminal, direction] = divergenceEvent(~, x)
+    vel_norm   = norm(x(4:6));
+    omega_norm = norm(x(10:12));
+    pos_norm   = norm(x(1:3));
+
+    % Crosses zero (upward) when any limit exceeded -> stop
+    value      = max([vel_norm - 500, omega_norm - 100, pos_norm - 10000]);
+    isterminal = 1;
+    direction  = 1;
+end
